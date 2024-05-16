@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 candle-core = "0.5.0"
+candle-nn = "0.5.0"
