@@ -109,81 +109,62 @@ pub fn train() -> Result<(), Box<dyn std::error::Error>> {
 
     const BSIZE: usize = 32;
     const EPOCHS: i32 = 100;
-    let mut loss_scalar = 0.0;
+    let mut avg_loss = 0.0;
 
     let n_batches = emb.dim(0)? / BSIZE;
     let mut batch_idxs = (0..n_batches).collect::<Vec<usize>>();
 
     for epoch in 0..EPOCHS {
-        let logits = model.forward(&emb)?;
-        let log_sm = ops::log_softmax(&logits, D::Minus1)?;
-        let loss = loss::nll(&log_sm, &y)?;
-        sgd.backward_step(&loss)?;
-        loss_scalar = loss.to_scalar::<f32>()?;
+        let mut sum_loss = 0f32;
+        batch_idxs.shuffle(&mut thread_rng());
+        for batch_idx in batch_idxs.iter() {
+            let emb = emb.narrow(0, batch_idx * BSIZE, BSIZE)?;
+            let y = y.narrow(0, batch_idx * BSIZE, BSIZE)?;
+            let logits = model.forward(&emb)?;
+            let log_sm = ops::log_softmax(&logits, D::Minus1)?;
+            let loss = loss::nll(&log_sm, &y)?;
+            sgd.backward_step(&loss)?;
+            sum_loss += loss.to_scalar::<f32>()?;
+        }
+        avg_loss = sum_loss / n_batches as f32;
         if epoch % 1 == 0 {
-            println!("Epoch: {epoch:3} Train loss: {:8.5}", loss_scalar);
+            println!("Epoch: {epoch:3} Train loss: {:8.5}", avg_loss);
         }
     }
 
-    // Experimenting with indexing tensors...
-    // println!("{:?}", C.get(5));
-    // let i = Tensor::from_vec(vec![5i64], 1, &Device::Cpu)?;
-    // let x_oh = one_hot(i, 27, 1f32, 0f32)?;
-    // let _t = x_oh.matmul(&C)?;
-    // println!("{:?}", _t.get(0));
+    println!("\n==========\n");
+    println!(
+        "Sample results after {} epochs of training with a training loss of {}:\n",
+        EPOCHS, avg_loss
+    );
+    let mut rng = thread_rng();
 
-    // let xs_len = xs.len();
-    // let ys_len = ys.len();
-    // let xs = Tensor::from_vec(xs.clone(), xs_len, &Device::Cpu)?;
-    // let ys = Tensor::from_vec(ys.clone(), ys_len, &Device::Cpu)?;
-
-    // let xenc = one_hot(xs.clone(), 27, 1f32, 0f32);
-    // let xenc = xenc.unwrap();
-    // let varmap = VarMap::new();
-    // let vs = VarBuilder::from_varmap(&varmap, DType::F32, &Device::Cpu);
-    // let model = candle_nn::linear(27, 27, vs)?;
-    // let mut sgd = SGD::new(varmap.all_vars(), 1.0)?;
-    // const EPOCHS: i32 = 250;
-    // let mut loss_scalar = 0.0;
-
-    // for epoch in 0..EPOCHS {
-    //     let logits = model.forward(&xenc)?;
-    //     let log_sm = ops::log_softmax(&logits, D::Minus1)?;
-    //     let loss = loss::nll(&log_sm, &ys)?;
-    //     sgd.backward_step(&loss)?;
-    //     loss_scalar = loss.to_scalar::<f32>()?;
-    //     if epoch % 10 == 0 {
-    //         println!("Epoch: {epoch:3} Train loss: {:8.5}", loss_scalar);
-    //     }
-    // }
-
-    // println!("\n==========\n");
-    // println!(
-    //     "Sample results after {} epochs of training with a training loss of {}:\n",
-    //     EPOCHS, loss_scalar
-    // );
-    // let mut rng = thread_rng();
-
-    // for i in 0..10 {
-    //     let mut out: Vec<&char> = Vec::new();
-    //     let mut ix: i64 = 0;
-    //     loop {
-    //         let ix_tensor = Tensor::from_vec(vec![ix], 1, &Device::Cpu)?;
-    //         let xenc = one_hot(ix_tensor, 27, 1f32, 0f32)?;
-    //         let logits = model.forward(&xenc)?;
-    //         let counts = logits.exp()?;
-    //         let counts_sum = counts.sum(1)?.unsqueeze(1)?.expand(&[1, 27])?;
-    //         let probs = counts.div(&counts_sum)?;
-    //         let probs_vec = probs.reshape(&[27])?.to_vec1::<f32>()?;
-    //         let dist = WeightedIndex::new(probs_vec).unwrap();
-    //         ix = dist.sample(&mut rng) as i64;
-    //         out.push(itos.get(&ix).unwrap());
-    //         if ix == 0 {
-    //             break;
-    //         }
-    //     }
-    //     println!("{:?}", out.iter().join(""));
-    // }
+    for i in 0..10 {
+        let mut out: Vec<&char> = Vec::new();
+        let mut ctx0 = 0i64;
+        let mut ctx1 = 0i64;
+        let mut ctx2 = 0i64;
+        loop {
+            let emb0 = c.embedding(&Tensor::from_vec(vec![ctx0], 1, &Device::Cpu)?)?;
+            let emb1 = c.embedding(&Tensor::from_vec(vec![ctx1], 1, &Device::Cpu)?)?;
+            let emb2 = c.embedding(&Tensor::from_vec(vec![ctx2], 1, &Device::Cpu)?)?;
+            let emb = Tensor::cat(&[emb0, emb1, emb2], 1)?;
+            let logits = model.forward(&emb)?;
+            let counts = logits.exp()?;
+            let counts_sum = counts.sum(1)?.unsqueeze(1)?.expand(&[1, 27])?;
+            let probs = counts.div(&counts_sum)?;
+            let probs_vec = probs.reshape(&[27])?.to_vec1::<f32>()?;
+            let dist = WeightedIndex::new(probs_vec).unwrap();
+            ctx0 = ctx1;
+            ctx1 = ctx2;
+            ctx2 = dist.sample(&mut rng) as i64;
+            out.push(itos.get(&ctx2).unwrap());
+            if ctx2 == 0 {
+                break;
+            }
+        }
+        println!("{:?}", out.iter().join(""));
+    }
 
     Ok(())
 }
