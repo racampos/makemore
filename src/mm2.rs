@@ -82,20 +82,35 @@ pub fn train() -> Result<(), Box<dyn std::error::Error>> {
     // println!("{:?}", emb.to_vec2::<f32>());
     println!("{:?}", emb.shape());
 
+    println!("{:?}", c.get(5));
+    let i = Tensor::from_vec(vec![5i64, 5i64, 5i64], 3, &Device::Cpu)?;
+    let x_oh = one_hot(i, 27, 1f32, 0f32)?;
+    println!("{:?}", x_oh.shape());
+    let _t = x_oh.matmul(&c)?.flatten(0, 1)?;
+    println!("{:?}", _t.shape());
+    println!("{:?}", _t);
+
     struct MultiLevelPerceptron {
+        emb: Linear,
         hidden: Linear,
         output: Linear,
     }
 
     impl MultiLevelPerceptron {
         fn new(vs: VarBuilder) -> candle_core::Result<Self> {
+            let emb = candle_nn::linear(27, 2, vs.pp("emb"))?;
             let hidden = candle_nn::linear(6, 100, vs.pp("hidden"))?;
             let output = candle_nn::linear(100, 27, vs.pp("output"))?;
-            Ok(Self { hidden, output })
+            Ok(Self {
+                emb,
+                hidden,
+                output,
+            })
         }
 
         fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
-            let xs = self.hidden.forward(xs)?;
+            let xs = self.emb.forward(xs)?.flatten(1, 2)?;
+            let xs = self.hidden.forward(&xs)?;
             let xs = xs.tanh()?;
             self.output.forward(&xs)
         }
@@ -118,9 +133,11 @@ pub fn train() -> Result<(), Box<dyn std::error::Error>> {
         let mut sum_loss = 0f32;
         batch_idxs.shuffle(&mut thread_rng());
         for batch_idx in batch_idxs.iter() {
-            let emb = emb.narrow(0, batch_idx * BSIZE, BSIZE)?;
+            let x = x.narrow(0, batch_idx * BSIZE, BSIZE)?;
+            let x_oh = one_hot(x, 27, 1f32, 0f32)?;
             let y = y.narrow(0, batch_idx * BSIZE, BSIZE)?;
-            let logits = model.forward(&emb)?;
+            // println!("x_oh shape: {:?}", x_oh.shape());
+            let logits = model.forward(&x_oh)?;
             let log_sm = ops::log_softmax(&logits, D::Minus1)?;
             let loss = loss::nll(&log_sm, &y)?;
             sgd.backward_step(&loss)?;
@@ -141,25 +158,22 @@ pub fn train() -> Result<(), Box<dyn std::error::Error>> {
 
     for i in 0..10 {
         let mut out: Vec<&char> = Vec::new();
-        let mut ctx0 = 0i64;
-        let mut ctx1 = 0i64;
-        let mut ctx2 = 0i64;
+        let mut ctx = vec![0i64, 0i64, 0i64];
         loop {
-            let emb0 = c.embedding(&Tensor::from_vec(vec![ctx0], 1, &Device::Cpu)?)?;
-            let emb1 = c.embedding(&Tensor::from_vec(vec![ctx1], 1, &Device::Cpu)?)?;
-            let emb2 = c.embedding(&Tensor::from_vec(vec![ctx2], 1, &Device::Cpu)?)?;
-            let emb = Tensor::cat(&[emb0, emb1, emb2], 1)?;
-            let logits = model.forward(&emb)?;
+            let x = Tensor::from_vec(ctx.clone(), 3, &Device::Cpu)?;
+            let x = x.reshape((1, 3))?;
+            let x = one_hot(x, 27, 1f32, 0f32)?;
+            let logits = model.forward(&x)?;
             let counts = logits.exp()?;
             let counts_sum = counts.sum(1)?.unsqueeze(1)?.expand(&[1, 27])?;
             let probs = counts.div(&counts_sum)?;
             let probs_vec = probs.reshape(&[27])?.to_vec1::<f32>()?;
             let dist = WeightedIndex::new(probs_vec).unwrap();
-            ctx0 = ctx1;
-            ctx1 = ctx2;
-            ctx2 = dist.sample(&mut rng) as i64;
-            out.push(itos.get(&ctx2).unwrap());
-            if ctx2 == 0 {
+            let ix = dist.sample(&mut rng) as i64;
+            ctx = vec![*ctx.get(1).unwrap(), *ctx.get(2).unwrap(), ix];
+
+            out.push(itos.get(&ix).unwrap());
+            if ix == 0 {
                 break;
             }
         }
